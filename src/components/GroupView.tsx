@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { formatINR } from '../lib/money'
 import { memberName } from '../lib/share'
 import type { Group } from '../lib/types'
@@ -16,9 +16,13 @@ interface Props {
   update: (fn: (g: Group) => Group) => void
   onDelete: () => void
   notify: (msg: string) => void
+  /** Optional panel above the tabs (cloud sharing). */
+  sharing?: ReactNode
+  deleteLabel?: string
+  deleteConfirm?: string
 }
 
-export function GroupView({ group, onBack, update, onDelete, notify }: Props) {
+export function GroupView({ group, onBack, update, onDelete, notify, sharing, deleteLabel = 'Delete', deleteConfirm }: Props) {
   const [tab, setTab] = useState<Tab>(group.expenses.length === 0 ? 'add' : 'balances')
 
   const tabs: { key: Tab; label: string; icon: IconName }[] = [
@@ -40,12 +44,14 @@ export function GroupView({ group, onBack, update, onDelete, notify }: Props) {
         <button
           type="button"
           className="flex min-h-11 items-center gap-1 rounded-full px-3 text-sm font-semibold text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
-          onClick={() => confirm(`Delete group "${group.name}" and all its expenses?`) && onDelete()}
+          onClick={() => confirm(deleteConfirm ?? `Delete group "${group.name}" and all its expenses?`) && onDelete()}
         >
           <Icon name="trash" className="h-4 w-4" />
-          Delete
+          {deleteLabel}
         </button>
       </div>
+
+      {sharing}
 
       <div className="sticky top-0 z-10 -mx-4 mb-5 bg-slate-50/90 px-4 py-2 backdrop-blur dark:bg-slate-950/90">
         <div role="tablist" aria-label="Group sections" className="grid grid-cols-3 gap-1 rounded-2xl bg-slate-200/70 p-1 dark:bg-slate-800">

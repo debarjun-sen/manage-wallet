@@ -31,6 +31,14 @@ export interface Settlement {
   date: string // YYYY-MM-DD
 }
 
+/** Present only on groups shared through the cloud. Local-only groups never have it. */
+export interface CloudInfo {
+  role: 'admin' | 'member'
+  inviteCode: string
+  /** Which person (Member.id) in this group the signed-in user is, if they picked one. */
+  memberId?: string
+}
+
 export interface Group {
   id: string
   name: string
@@ -38,6 +46,7 @@ export interface Group {
   expenses: Expense[]
   settlements: Settlement[]
   createdAt: string
+  cloud?: CloudInfo
 }
 
 export interface AppState {

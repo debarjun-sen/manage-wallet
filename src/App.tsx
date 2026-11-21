@@ -1,4 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { SyncEngine, type CloudStatus } from './cloud/engine'
+import { CLOUD_ENABLED } from './cloud/supabase'
+import { Account } from './components/cloud/Account'
+import { GroupSharing } from './components/cloud/GroupSharing'
+import { JoinGroup } from './components/cloud/JoinGroup'
 import { GroupView } from './components/GroupView'
 import { NewGroup } from './components/NewGroup'
 import { Personal } from './components/Personal'
@@ -10,7 +15,13 @@ import { minCashFlow } from './lib/settle'
 import { EMPTY_STATE, loadState, saveState } from './lib/storage'
 import type { AppState, Group } from './lib/types'
 
-type Route = { name: 'home' } | { name: 'personal' } | { name: 'new-group' } | { name: 'group'; id: string }
+type Route =
+  | { name: 'home' }
+  | { name: 'personal' }
+  | { name: 'new-group' }
+  | { name: 'group'; id: string }
+  | { name: 'account' }
+  | { name: 'join'; code: string }
 
 // Hash routing: the browser / Android back button works and groups are deep-linkable.
 function parseHash(): Route {
@@ -19,6 +30,11 @@ function parseHash(): Route {
   if (h === 'new') return { name: 'new-group' }
   const m = /^group\/(.+)$/.exec(h)
   if (m) return { name: 'group', id: decodeURIComponent(m[1]) }
+  if (CLOUD_ENABLED) {
+    if (h === 'account') return { name: 'account' }
+    const j = /^join(?:\/([A-Za-z0-9]{0,16}))?$/.exec(h)
+    if (j) return { name: 'join', code: j[1] ?? '' }
+  }
   return { name: 'home' }
 }
 
@@ -30,16 +46,51 @@ function toHash(r: Route): string {
       return '#/new'
     case 'group':
       return `#/group/${encodeURIComponent(r.id)}`
+    case 'account':
+      return '#/account'
+    case 'join':
+      return r.code ? `#/join/${encodeURIComponent(r.code)}` : '#/join'
     default:
       return '#/'
   }
 }
+
+const NO_CLOUD: CloudStatus = { ready: true, user: null, online: true, pending: 0, syncing: false, lastSync: null, error: null }
+const noSubscribe = () => () => undefined
+const noStatus = () => NO_CLOUD
 
 export default function App() {
   const [state, setState] = useState<AppState>(loadState)
   const [route, setRouteState] = useState<Route>(parseHash)
   const [toast, setToast] = useState<string | null>(null)
   const toastTimer = useRef<number | undefined>(undefined)
+
+  // All state changes go through `commit`, which works on the latest state synchronously. That lets
+  // shared-group edits be diffed exactly once (no double-run React updaters) and handed to the sync engine.
+  const stateRef = useRef(state)
+  const commit = useCallback((fn: (s: AppState) => AppState) => {
+    const next = fn(stateRef.current)
+    if (next === stateRef.current) return
+    stateRef.current = next
+    setState(next)
+  }, [])
+
+  const notifyRef = useRef<(msg: string) => void>(() => undefined)
+  const [engine] = useState(() =>
+    CLOUD_ENABLED
+      ? new SyncEngine({
+          getGroups: () => stateRef.current.groups,
+          setGroups: (fn) => commit((s) => ({ ...s, groups: fn(s.groups) })),
+          notify: (msg) => notifyRef.current(msg),
+        })
+      : null,
+  )
+  const cloud = useSyncExternalStore(engine?.subscribe ?? noSubscribe, engine?.getStatus ?? noStatus)
+  useEffect(() => {
+    if (!engine) return
+    void engine.start()
+    return () => engine.stop()
+  }, [engine])
 
   // Block bodies: an effect must return nothing or a cleanup function (StrictMode calls it in dev).
   useEffect(() => {
@@ -67,28 +118,40 @@ export default function App() {
     window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast(null), 2500)
   }, [])
+  notifyRef.current = notify
 
-  const updateGroup = (id: string, fn: (g: Group) => Group) => setState((s) => ({ ...s, groups: s.groups.map((g) => (g.id === id ? fn(g) : g)) }))
+  const updateGroup = (id: string, fn: (g: Group) => Group) =>
+    commit((s) => {
+      const prev = s.groups.find((g) => g.id === id)
+      if (!prev) return s
+      const next = fn(prev)
+      if (prev.cloud && engine) engine.recordEdit(prev, next)
+      return { ...s, groups: s.groups.map((g) => (g.id === id ? next : g)) }
+    })
 
   const loadDemo = () => {
     const demo = demoState()
-    setState((s) => ({ ...s, groups: [...demo.groups, ...s.groups], budget: s.budget || demo.budget, me: s.me || demo.me }))
+    commit((s) => ({ ...s, groups: [...demo.groups, ...s.groups], budget: s.budget || demo.budget, me: s.me || demo.me }))
     go({ name: 'group', id: demo.groups[0].id })
     notify('Goa Trip demo loaded')
   }
 
   const reset = () => {
-    if (!confirm('Clear ALL groups, expenses and settings on this device?')) return
-    setState(EMPTY_STATE)
+    const extra = cloud.user ? ' You will also be signed out; shared groups stay in your account.' : ''
+    if (!confirm(`Clear ALL groups, expenses and settings on this device?${extra}`)) return
+    if (engine && cloud.user) void engine.signOut()
+    engine?.clearOutbox()
+    commit(() => EMPTY_STATE)
     go({ name: 'home' }, true)
     notify('Everything cleared')
   }
 
   const group = route.name === 'group' ? state.groups.find((g) => g.id === route.id) : undefined
-  const showNav = route.name === 'home' || route.name === 'personal'
-  const navItems: { name: 'home' | 'personal'; icon: IconName; label: string }[] = [
+  const showNav = route.name === 'home' || route.name === 'personal' || route.name === 'account'
+  const navItems: { name: 'home' | 'personal' | 'account'; icon: IconName; label: string }[] = [
     { name: 'home', icon: 'users', label: 'Groups' },
     { name: 'personal', icon: 'target', label: 'My month' },
+    ...(CLOUD_ENABLED ? [{ name: 'account' as const, icon: 'user' as const, label: cloud.user ? 'Account' : 'Sign in' }] : []),
   ]
 
   return (
@@ -110,12 +173,20 @@ export default function App() {
       </header>
 
       <main className={`mx-auto max-w-2xl px-4 pt-3 ${showNav ? 'pb-32' : 'pb-16'}`}>
-        {route.name === 'home' && <Home groups={state.groups} open={(id) => go({ name: 'group', id })} create={() => go({ name: 'new-group' })} loadDemo={loadDemo} />}
+        {route.name === 'home' && (
+          <Home
+            groups={state.groups}
+            open={(id) => go({ name: 'group', id })}
+            create={() => go({ name: 'new-group' })}
+            loadDemo={loadDemo}
+            join={CLOUD_ENABLED ? () => go({ name: 'join', code: '' }) : undefined}
+          />
+        )}
         {route.name === 'new-group' && (
           <NewGroup
             onCancel={() => go({ name: 'home' })}
             onCreate={(g) => {
-              setState((s) => ({ ...s, groups: [g, ...s.groups] }))
+              commit((s) => ({ ...s, groups: [g, ...s.groups] }))
               go({ name: 'group', id: g.id }, true)
               notify(`"${g.name}" created`)
             }}
@@ -128,10 +199,52 @@ export default function App() {
             onBack={() => go({ name: 'home' })}
             update={(fn) => updateGroup(group.id, fn)}
             onDelete={() => {
-              setState((s) => ({ ...s, groups: s.groups.filter((g) => g.id !== group.id) }))
+              if (group.cloud && engine) {
+                // Shared group: "Leave" (the group lives on for the others).
+                engine.leave(group.id).then(
+                  () => {
+                    notify(`Left "${group.name}"`)
+                    go({ name: 'home' }, true)
+                  },
+                  (e: unknown) => notify(e instanceof Error ? e.message : 'Could not leave the group'),
+                )
+                return
+              }
+              commit((s) => ({ ...s, groups: s.groups.filter((g) => g.id !== group.id) }))
               go({ name: 'home' }, true)
             }}
             notify={notify}
+            deleteLabel={group.cloud ? 'Leave' : undefined}
+            deleteConfirm={group.cloud ? `Leave "${group.name}"? It disappears from your devices; the others keep it.` : undefined}
+            sharing={
+              engine ? (
+                <GroupSharing
+                  group={group}
+                  engine={engine}
+                  status={cloud}
+                  notify={notify}
+                  goAccount={() => go({ name: 'account' })}
+                  onGone={() => go({ name: 'home' }, true)}
+                  onShared={(shared) => {
+                    // A pull may already have brought the shared copy in: never keep two groups with one id.
+                    commit((s) => ({ ...s, groups: s.groups.filter((g) => g.id !== shared.id).map((g) => (g.id === group.id ? shared : g)) }))
+                    go({ name: 'group', id: shared.id }, true)
+                  }}
+                />
+              ) : undefined
+            }
+          />
+        )}
+        {route.name === 'account' && engine && <Account engine={engine} status={cloud} notify={notify} onJoin={() => go({ name: 'join', code: '' })} />}
+        {route.name === 'join' && engine && (
+          <JoinGroup
+            engine={engine}
+            status={cloud}
+            groups={state.groups}
+            initialCode={route.code}
+            notify={notify}
+            onBack={() => go({ name: 'home' })}
+            onOpen={(id) => go({ name: 'group', id }, true)}
           />
         )}
         {route.name === 'group' && !group && (
@@ -141,13 +254,13 @@ export default function App() {
           </Empty>
         )}
         {route.name === 'personal' && (
-          <Personal state={state} setBudget={(budget) => setState((s) => ({ ...s, budget }))} setMe={(me) => setState((s) => ({ ...s, me }))} />
+          <Personal state={state} setBudget={(budget) => commit((s) => ({ ...s, budget }))} setMe={(me) => commit((s) => ({ ...s, me }))} />
         )}
       </main>
 
       {showNav && (
         <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
-          <div className="mx-auto grid max-w-2xl grid-cols-2">
+          <div className={`mx-auto grid max-w-2xl ${navItems.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
             {navItems.map((n) => {
               const active = route.name === n.name
               return (
@@ -155,7 +268,7 @@ export default function App() {
                   key={n.name}
                   type="button"
                   aria-current={active ? 'page' : undefined}
-                  onClick={() => go(n.name === 'home' ? { name: 'home' } : { name: 'personal' })}
+                  onClick={() => go({ name: n.name })}
                   className={`flex min-h-14 flex-col items-center justify-center gap-1 py-2 text-sm font-bold ${active ? 'text-violet-600 dark:text-violet-300' : 'text-slate-500 dark:text-slate-400'}`}
                 >
                   <Icon name={n.icon} className="h-6 w-6" />
@@ -180,7 +293,19 @@ export default function App() {
   )
 }
 
-function Home({ groups, open, create, loadDemo }: { groups: Group[]; open: (id: string) => void; create: () => void; loadDemo: () => void }) {
+function Home({
+  groups,
+  open,
+  create,
+  loadDemo,
+  join,
+}: {
+  groups: Group[]
+  open: (id: string) => void
+  create: () => void
+  loadDemo: () => void
+  join?: () => void
+}) {
   if (groups.length === 0) {
     return (
       <div className="flex flex-col gap-5 pt-6">
@@ -201,7 +326,15 @@ function Home({ groups, open, create, loadDemo }: { groups: Group[]; open: (id: 
           <Icon name="sparkles" />
           Load demo data (Goa Trip)
         </Button>
-        <p className="text-center text-sm text-slate-500 dark:text-slate-400">No sign-up. Everything stays on this device.</p>
+        {join && (
+          <Button variant="ghost" className="py-4 text-lg" onClick={join}>
+            <Icon name="link" />
+            Join a friend’s group
+          </Button>
+        )}
+        <p className="text-center text-sm text-slate-500 dark:text-slate-400">
+          {join ? 'No sign-up needed. Sign in only to share groups with friends.' : 'No sign-up. Everything stays on this device.'}
+        </p>
       </div>
     )
   }
@@ -225,6 +358,7 @@ function Home({ groups, open, create, loadDemo }: { groups: Group[]; open: (id: 
                 <div className="min-w-0">
                   <div className="truncate text-2xl font-extrabold">{g.name}</div>
                   <div className="truncate text-slate-500 dark:text-slate-400">
+                    {g.cloud && <span className="font-semibold text-violet-600 dark:text-violet-400">Shared · </span>}
                     {g.members.length} people · {g.expenses.length} expenses
                   </div>
                 </div>
@@ -239,6 +373,12 @@ function Home({ groups, open, create, loadDemo }: { groups: Group[]; open: (id: 
           </button>
         )
       })}
+      {join && (
+        <Button variant="ghost" onClick={join}>
+          <Icon name="link" />
+          Join a friend’s group with a code
+        </Button>
+      )}
     </div>
   )
 }

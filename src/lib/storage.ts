@@ -20,6 +20,18 @@ function isGroup(g: unknown): g is Group {
   return membersOk && expensesOk && settlementsOk
 }
 
+/** A damaged `cloud` marker is dropped instead of discarding the group: its data stays as a local group. */
+function cleanCloud(g: Group): Group {
+  const c: unknown = g.cloud
+  if (c === undefined) return g
+  if (isObj(c) && (c.role === 'admin' || c.role === 'member') && isStr(c.inviteCode) && (c.memberId === undefined || isStr(c.memberId))) {
+    return { ...g, cloud: { role: c.role, inviteCode: c.inviteCode, ...(isStr(c.memberId) ? { memberId: c.memberId } : {}) } }
+  }
+  const rest = { ...g }
+  delete rest.cloud
+  return rest
+}
+
 export function loadState(): AppState {
   try {
     const raw = localStorage.getItem(KEY)
@@ -27,7 +39,7 @@ export function loadState(): AppState {
     const parsed: unknown = JSON.parse(raw)
     if (!isObj(parsed)) return EMPTY_STATE
     return {
-      groups: Array.isArray(parsed.groups) ? parsed.groups.filter(isGroup) : [],
+      groups: Array.isArray(parsed.groups) ? parsed.groups.filter(isGroup).map(cleanCloud) : [],
       budget: isInt(parsed.budget) && parsed.budget >= 0 ? parsed.budget : 0,
       me: isStr(parsed.me) ? parsed.me.slice(0, 40) : '',
     }

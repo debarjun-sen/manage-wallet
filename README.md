@@ -2,7 +2,9 @@
 
 Split shared expenses with friends: add or paste an expense, instantly see who owes whom, settle up with one tap via UPI.
 
-Installable PWA · React + TypeScript + Tailwind · no backend, all data in `localStorage` · works offline.
+Installable PWA · React + TypeScript + Tailwind · works offline. Groups live in `localStorage` by default; with Supabase configured, groups can be **shared** with friends (sign-in, invite codes, admin/member roles, live sync, push notifications).
+
+**Setup, deployment, install steps (Android/iOS) and the test checklist for shared groups:** [docs/06-Shared-Groups-Install-and-Deploy.md](docs/06-Shared-Groups-Install-and-Deploy.md)
 
 ## Run
 
@@ -40,8 +42,12 @@ src/lib/        pure logic (unit-tested)
   parser.ts     SMS / UPI message parser
   category.ts   merchant -> category auto-tagging
   share.ts      UPI links, WhatsApp summary, CSV export
-src/components/ UI screens
-public/sw.js    offline service worker
+  sync.ts       shared-group diff / outbox / merge logic
+src/cloud/      Supabase sync engine + Web Push (cloud mode only)
+src/components/ UI screens (cloud/ = sign-in, sharing, join)
+api/notify.ts   Vercel Function: push notifications for group activity
+supabase/       database schema, row-level security, RPCs
+public/sw.js    offline service worker + push handler
 ```
 
 All amounts are stored as integer **paise**.

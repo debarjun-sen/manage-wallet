@@ -1,6 +1,6 @@
 // Manage Wallet service worker: precache the app shell + built assets, then cache-first.
-const CACHE = 'manage-wallet-v3'
-const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png']
+const CACHE = 'manage-wallet-v4'
+const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -64,5 +64,44 @@ self.addEventListener('fetch', (event) => {
           return res
         }),
     ),
+  )
+})
+
+// ---- Push notifications for shared groups (sent by /api/notify) ----
+self.addEventListener('push', (event) => {
+  let data = {}
+  try {
+    data = event.data ? event.data.json() : {}
+  } catch {
+    data = { body: event.data ? event.data.text() : '' }
+  }
+  const title = typeof data.title === 'string' ? data.title : 'Manage Wallet'
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: typeof data.body === 'string' ? data.body : 'New activity in your group',
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      tag: typeof data.tag === 'string' ? data.tag : undefined,
+      renotify: typeof data.tag === 'string',
+      data: { url: typeof data.url === 'string' && data.url.startsWith('/') ? data.url : '/' },
+    }),
+  )
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const target = new URL(event.notification.data?.url || '/', self.location.origin).href
+  event.waitUntil(
+    (async () => {
+      const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      for (const w of wins) {
+        if (new URL(w.url).origin === self.location.origin) {
+          await w.focus()
+          if ('navigate' in w) await w.navigate(target).catch(() => undefined)
+          return
+        }
+      }
+      await self.clients.openWindow(target)
+    })(),
   )
 })

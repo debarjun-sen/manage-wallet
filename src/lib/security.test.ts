@@ -4,6 +4,8 @@ import { MAX_MESSAGE_LENGTH, parseMessage } from './parser'
 import { groupToCsv, upiLink, whatsappUrl } from './share'
 import { loadState } from './storage'
 import type { Group } from './types'
+// @ts-expect-error plain .mjs module without type declarations
+import { buildCsp } from '../../security-headers.mjs'
 
 const group = (description: string, memberName = 'Asha'): Group => ({
   id: 'g',
@@ -68,8 +70,30 @@ describe('storage validation', () => {
     expect(s.budget).toBe(0)
     expect(s.me).toBe('')
   })
+  it('keeps a valid cloud marker and turns a damaged one into a local-only group', () => {
+    const shared = { ...group('ok'), id: 's', cloud: { role: 'admin', inviteCode: 'ABCD2345', memberId: 'a' } }
+    const damaged = { ...group('ok'), id: 'd', cloud: { role: 'owner', inviteCode: 5 } }
+    store['manage-wallet:v1'] = JSON.stringify({ groups: [shared, damaged], budget: 0, me: '' })
+    const [s, d] = loadState().groups
+    expect(s.cloud).toEqual({ role: 'admin', inviteCode: 'ABCD2345', memberId: 'a' })
+    expect(d.id).toBe('d')
+    expect('cloud' in d).toBe(false)
+  })
   it('survives invalid JSON', () => {
     store['manage-wallet:v1'] = '{not json'
     expect(loadState().groups).toEqual([])
+  })
+})
+
+describe('content security policy', () => {
+  const connect = (csp: string) => csp.split('; ').find((d) => d.startsWith('connect-src'))
+  it('stays self-only for the local-only build', () => {
+    expect(connect(buildCsp(undefined))).toBe("connect-src 'self'")
+  })
+  it('allows exactly the configured Supabase project over https and wss', () => {
+    expect(connect(buildCsp('https://abc.supabase.co/'))).toBe("connect-src 'self' https://abc.supabase.co wss://abc.supabase.co")
+  })
+  it('refuses a non-https Supabase URL', () => {
+    expect(() => buildCsp('http://abc.supabase.co')).toThrow()
   })
 })

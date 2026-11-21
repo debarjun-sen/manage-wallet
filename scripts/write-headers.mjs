@@ -27,9 +27,19 @@ const current = existsSync(vercelPath) ? readFileSync(vercelPath, 'utf8').replac
 // Vercel reads vercel.json *before* the build runs, so a header change made during a Vercel build would
 // silently not apply (and a CSP missing the Supabase origin breaks sync). Fail loudly instead.
 if (process.env.VERCEL && current !== next) {
+  // Say what this build sees vs. what is committed. Only origins and variable *names* are printed, never values of keys.
+  const committed = /connect-src ([^;"]*)/.exec(current)?.[1] ?? '(none)'
+  const related = Object.keys(process.env).filter((k) => /SUPABASE|VAPID/i.test(k))
   console.error(
-    'vercel.json is out of date for this environment (CSP must include the Supabase URL).\n' +
-      'Run `npm run headers` locally with the same VITE_SUPABASE_URL and commit vercel.json + public/_headers.',
+    [
+      'vercel.json is out of date for this environment (CSP must include the Supabase URL).',
+      `  Vercel environment:            ${process.env.VERCEL_ENV ?? 'unknown'}`,
+      `  VITE_SUPABASE_URL this build:  ${supabaseUrl ? new URL(supabaseUrl).origin : 'NOT SET'}`,
+      `  connect-src in vercel.json:    ${committed}`,
+      `  Supabase/VAPID variables seen: ${related.length ? related.join(', ') : 'none'}`,
+      'Fix: make VITE_SUPABASE_URL in Vercel (for this environment) match .env.local, or run `npm run headers`',
+      'locally with the same VITE_SUPABASE_URL and commit vercel.json + public/_headers. Then redeploy.',
+    ].join('\n'),
   )
   process.exit(1)
 }

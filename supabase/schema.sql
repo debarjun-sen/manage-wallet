@@ -373,6 +373,31 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------------------------
+-- Privileges. Newer Supabase projects no longer grant table access to API roles automatically, so
+-- grant exactly what the app uses. Row-level security above still decides *which rows* each user
+-- can touch; these grants decide *which operations* are possible at all. `anon` gets nothing.
+-- ---------------------------------------------------------------------------------------------
+
+grant usage on schema public to authenticated, service_role;
+
+revoke all on public.profiles, public.groups, public.group_users, public.people, public.expenses,
+  public.settlements, public.push_subscriptions from anon, authenticated;
+
+grant select, update (display_name) on public.profiles to authenticated;
+grant select, update (name) on public.groups to authenticated;
+grant select on public.group_users to authenticated;
+grant select, insert, update on public.people, public.expenses, public.settlements to authenticated;
+grant select, delete on public.push_subscriptions to authenticated;
+
+-- The push function (api/notify.ts) uses the service role, which bypasses RLS.
+grant all on public.profiles, public.groups, public.group_users, public.people, public.expenses,
+  public.settlements, public.push_subscriptions to service_role;
+
+-- Helpers called from policies, defaults and check constraints run as the signed-in user.
+grant execute on function public.is_group_member(text), public.is_group_admin(text),
+  public.splits_valid(jsonb, bigint), public.new_invite_code() to authenticated, service_role;
+
+-- ---------------------------------------------------------------------------------------------
 -- Realtime: stream row changes (Realtime applies the RLS policies above per subscriber)
 -- ---------------------------------------------------------------------------------------------
 
